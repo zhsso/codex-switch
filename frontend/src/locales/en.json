@@ -183,6 +183,8 @@
         "tokens": "Tokens",
         "cost": "Cost",
         "successRate": "Success rate",
+        "cacheHitRate": "Cache hit rate",
+        "cacheHitRateHint": "Cache reads: {cached} / Total input: {total} tokens",
         "loading": "Refreshing...",
         "noData": "No data yet today",
         "lastUsed": "In Use"

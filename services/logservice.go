@@ -680,10 +680,17 @@ func (ls *LogService) ProviderDailyStats(platform string) ([]ProviderDailyStat, 
 		return nil, err
 	}
 	statMap := map[string]*ProviderDailyStat{}
+	canonicalNames := make(map[string]string)
 	for _, record := range records {
 		provider := strings.TrimSpace(record.GetString("provider"))
 		if provider == "" {
 			provider = "(unknown)"
+		} else if canonical, cached := canonicalNames[provider]; cached {
+			provider = canonical
+		} else {
+			canonical := ResolveProviderAlias(CodexPlatform, provider)
+			canonicalNames[provider] = canonical
+			provider = canonical
 		}
 		createdAt, hasTime := parseCreatedAt(record)
 		if hasTime {
@@ -722,6 +729,7 @@ func (ls *LogService) ProviderDailyStats(platform string) ([]ProviderDailyStat, 
 		if stat.TotalRequests > 0 {
 			stat.SuccessRate = float64(stat.SuccessfulRequests) / float64(stat.TotalRequests)
 		}
+		stat.CacheHitRate = cacheHitRate(stat.InputTokens, stat.CacheReadTokens)
 		stats = append(stats, *stat)
 	}
 	sort.Slice(stats, func(i, j int) bool {
@@ -731,6 +739,23 @@ func (ls *LogService) ProviderDailyStats(platform string) ([]ProviderDailyStat, 
 		return stats[i].TotalRequests > stats[j].TotalRequests
 	})
 	return stats, nil
+}
+
+// cacheHitRate returns the token-weighted share of input tokens read from an
+// existing prompt cache. InputTokens already excludes CacheReadTokens when the
+// request usage is parsed, so the denominator reconstructs the full input.
+// A nil result distinguishes a provider with no valid input usage from a real
+// zero-hit rate.
+func cacheHitRate(inputTokens, cacheReadTokens int64) *float64 {
+	if inputTokens < 0 || cacheReadTokens < 0 {
+		return nil
+	}
+	totalInputTokens := inputTokens + cacheReadTokens
+	if totalInputTokens <= 0 {
+		return nil
+	}
+	rate := float64(cacheReadTokens) / float64(totalInputTokens)
+	return &rate
 }
 
 func (ls *LogService) decorateCost(logEntry *RequestLog, costs *costContext) {
@@ -915,16 +940,17 @@ type LogStats struct {
 }
 
 type ProviderDailyStat struct {
-	Provider           string  `json:"provider"`
-	TotalRequests      int64   `json:"total_requests"`
-	SuccessfulRequests int64   `json:"successful_requests"`
-	FailedRequests     int64   `json:"failed_requests"`
-	SuccessRate        float64 `json:"success_rate"`
-	InputTokens        int64   `json:"input_tokens"`
-	OutputTokens       int64   `json:"output_tokens"`
-	ReasoningTokens    int64   `json:"reasoning_tokens"`
-	CacheReadTokens    int64   `json:"cache_read_tokens"`
-	CostTotal          float64 `json:"cost_total"`
+	Provider           string   `json:"provider"`
+	TotalRequests      int64    `json:"total_requests"`
+	SuccessfulRequests int64    `json:"successful_requests"`
+	FailedRequests     int64    `json:"failed_requests"`
+	SuccessRate        float64  `json:"success_rate"`
+	InputTokens        int64    `json:"input_tokens"`
+	OutputTokens       int64    `json:"output_tokens"`
+	ReasoningTokens    int64    `json:"reasoning_tokens"`
+	CacheReadTokens    int64    `json:"cache_read_tokens"`
+	CacheHitRate       *float64 `json:"cache_hit_rate"`
+	CostTotal          float64  `json:"cost_total"`
 }
 
 type LogStatsSeries struct {

@@ -169,6 +169,7 @@ export type ProviderDailyStat = {
   reasoning_tokens: number
   cache_create_tokens: number
   cache_read_tokens: number
+  cache_hit_rate: number | null
   cost_total: number
 }
 

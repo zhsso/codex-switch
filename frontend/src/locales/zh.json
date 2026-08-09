@@ -184,6 +184,8 @@
         "tokens": "Tokens",
         "cost": "花费",
         "successRate": "成功率",
+        "cacheHitRate": "缓存命中率",
+        "cacheHitRateHint": "缓存读取：{cached} / 总输入：{total} Token",
         "loading": "刷新中...",
         "noData": "今日暂无数据",
         "lastUsed": "正在使用"

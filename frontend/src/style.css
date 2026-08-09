@@ -1075,6 +1075,11 @@ html.dark .mac-sidebar-item:hover {
   font-weight: 600;
 }
 
+.card-cache-hit-rate {
+  color: var(--mac-text-secondary);
+  cursor: help;
+}
+
 .card-success-rate.success-good {
   color: #1f9d55;
 }
@@ -1105,6 +1110,10 @@ html.dark .card-success-rate.success-warn {
 
 html.dark .card-success-rate.success-bad {
   color: #f87171;
+}
+
+html.dark .card-cache-hit-rate {
+  color: rgba(255, 255, 255, 0.68);
 }
 
 html.dark .card-meta {

@@ -228,6 +228,13 @@
                     {{ stats.successRateLabel }}
                   </span>
                   <span class="card-metric-separator" aria-hidden="true">·</span>
+                  <span
+                    class="card-cache-hit-rate"
+                    :title="stats.cacheHitRateTooltip"
+                  >
+                    {{ stats.cacheHitRateLabel }}
+                  </span>
+                  <span class="card-metric-separator" aria-hidden="true">·</span>
                   <span >{{ stats.requests }}</span>
                   <span class="card-metric-separator" aria-hidden="true">·</span>
                   <span>{{ stats.tokens }}</span>
@@ -1533,6 +1540,8 @@ type ProviderStatDisplay =
       cost: string
       successRateLabel: string
       successRateClass: string
+      cacheHitRateLabel: string
+      cacheHitRateTooltip: string
     }
 
 const SUCCESS_RATE_THRESHOLDS = {
@@ -1545,6 +1554,21 @@ const formatSuccessRateLabel = (value: number) => {
   const decimals = percent >= 99.5 || percent === 0 ? 0 : 1
   return `${t('components.main.providers.successRate')}: ${percent.toFixed(decimals)}%`
 }
+
+const formatCacheHitRateLabel = (value: number | null) => {
+  if (value === null || !Number.isFinite(value)) {
+    return `${t('components.main.providers.cacheHitRate')}: —`
+  }
+  const percent = clamp(value, 0, 1) * 100
+  const decimals = percent >= 99.5 || percent === 0 ? 0 : 1
+  return `${t('components.main.providers.cacheHitRate')}: ${percent.toFixed(decimals)}%`
+}
+
+const formatCacheHitRateTooltip = (inputTokens: number, cacheReadTokens: number) =>
+  t('components.main.providers.cacheHitRateHint', {
+    cached: formatTokenNumber(Math.max(cacheReadTokens, 0)),
+    total: formatTokenNumber(Math.max(inputTokens + cacheReadTokens, 0)),
+  })
 
 const successRateClassName = (value: number) => {
   const rate = clamp(value, 0, 1)
@@ -1570,6 +1594,9 @@ const providerStatDisplay = (providerName: string): ProviderStatDisplay => {
   const successRateValue = Number.isFinite(stat.success_rate) ? clamp(stat.success_rate, 0, 1) : null
   const successRateLabel = successRateValue !== null ? formatSuccessRateLabel(successRateValue) : ''
   const successRateClass = successRateValue !== null ? successRateClassName(successRateValue) : ''
+  const cacheHitRateValue = stat.cache_hit_rate === null || stat.cache_hit_rate === undefined
+    ? null
+    : Number(stat.cache_hit_rate)
   return {
     state: 'ready',
     requests: `${t('components.main.providers.requests')}: ${formatMetric(stat.total_requests)}`,
@@ -1577,6 +1604,8 @@ const providerStatDisplay = (providerName: string): ProviderStatDisplay => {
     cost: `${t('components.main.providers.cost')}: ${currencyFormatter.value.format(Math.max(stat.cost_total, 0))}`,
     successRateLabel,
     successRateClass,
+    cacheHitRateLabel: formatCacheHitRateLabel(cacheHitRateValue),
+    cacheHitRateTooltip: formatCacheHitRateTooltip(stat.input_tokens, stat.cache_read_tokens),
   }
 }
 
