@@ -285,11 +285,6 @@ func TestProxyHandlerSwitchesProviderOnHTTP400ModelCapacity(t *testing.T) {
 	setAppSetting(t, "enable_blacklist", "true")
 	setAppSetting(t, "blacklist_level_enabled", "false")
 	setAppSetting(t, "blacklist_failure_threshold", "3")
-	config := DefaultBlacklistLevelConfig()
-	config.RetryWaitSeconds = 0
-	if err := NewSettingsService().SaveBlacklistLevelConfig(config); err != nil {
-		t.Fatal(err)
-	}
 
 	var capacityHits, healthyHits atomic.Int32
 	capacityUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -336,11 +331,6 @@ func TestProxyHandlerSwitchesProviderOnSSEPreludeOverload(t *testing.T) {
 	setAppSetting(t, "enable_blacklist", "true")
 	setAppSetting(t, "blacklist_level_enabled", "false")
 	setAppSetting(t, "blacklist_failure_threshold", "3")
-	config := DefaultBlacklistLevelConfig()
-	config.RetryWaitSeconds = 0
-	if err := NewSettingsService().SaveBlacklistLevelConfig(config); err != nil {
-		t.Fatal(err)
-	}
 
 	var overloadedHits, healthyHits atomic.Int32
 	overloadedUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

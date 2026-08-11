@@ -38,6 +38,11 @@ func main() {
 	providerService := services.NewProviderService()
 	providerRPC := newProviderRPCService(providerService)
 	settingsService := services.NewSettingsService()
+	if errorHandlingConfig, loadErr := settingsService.GetErrorHandlingConfig(); loadErr != nil {
+		log.Printf("load error handling config: %v", loadErr)
+	} else if errorHandlingConfig.Warning != "" {
+		log.Printf("error handling config warning: %s", errorHandlingConfig.Warning)
+	}
 	appSettings, err := services.NewAppSettingsService()
 	if err != nil {
 		shutdownDatabaseQueues()
@@ -65,6 +70,7 @@ func main() {
 		requestEventService,
 	)
 	logService := services.NewLogService(providerService)
+	logService.SetAppSettingsService(appSettings)
 	dailyLimitService := services.NewDailyCostLimitService(providerService, appSettings, logService)
 	dailyLimitService.SetBlacklistService(blacklistService)
 	blacklistService.SetBlacklistObserver(dailyLimitService.OnProviderBlacklisted)
@@ -219,7 +225,8 @@ func registerWebServices(registry *rpcRegistry, svc webServices) {
 	registry.Register("codeswitch/services.SettingsService", svc.settings,
 		"GetBlacklistSettingsStruct", "UpdateBlacklistSettings", "GetLevelBlacklistEnabled",
 		"SetLevelBlacklistEnabled", "IsBlacklistEnabled", "UpdateBlacklistEnabled",
-		"GetBlacklistLevelConfig", "UpdateBlacklistLevelConfig")
+		"GetBlacklistLevelConfig", "UpdateBlacklistLevelConfig",
+		"GetErrorHandlingConfig", "UpdateErrorHandlingConfig")
 	registry.Register("codeswitch/services.AppSettingsService", svc.appSettings,
 		"GetAppSettings", "SaveAppSettings")
 	registry.Register("codeswitch/services.BlacklistService", svc.blacklist,
@@ -228,7 +235,8 @@ func registerWebServices(registry *rpcRegistry, svc webServices) {
 		"GetStatuses", "SetActualUsage", "ManualBlock", "TemporaryUnblock")
 	registry.Register("codeswitch/services.LogService", svc.logs,
 		"CostSince", "ListRequestLogs", "GetRequestLogDetail", "ListProviders",
-		"HeatmapStats", "StatsSince", "ProviderDailyStats", "ListRequestEvents")
+		"HeatmapStats", "StatsSince", "ProviderDailyStats", "ListRequestEvents",
+		"GetErrorHandlingTodaySummary")
 	registry.Register("codeswitch/services.ModelSyncService", svc.modelSync,
 		"SyncNow", "GetSyncStatus", "GetDefaultModels", "RestoreBuiltinPricing")
 	registry.Register("codeswitch/services.SpeedTestService", svc.speedTest, "TestEndpoints")

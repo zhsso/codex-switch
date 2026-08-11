@@ -199,6 +199,23 @@
                 <span v-if="event.duration_sec" class="event-meta-item">{{ formatDuration(event.duration_sec) }}</span>
                 <span v-if="event.outcome" :class="['event-outcome', `event-outcome--${event.outcome}`]">{{ outcomeLabel(event.outcome) }}</span>
               </div>
+              <div v-if="hasPolicyMetadata(event)" class="event-policy-line">
+                <span v-if="event.policy_trigger" class="event-policy-trigger">{{ policyTriggerLabel(event.policy_trigger) }}</span>
+                <span v-if="event.policy_action" class="event-policy-action">{{ policyActionLabel(event.policy_action) }}</span>
+                <span
+                  v-if="event.policy_outcome"
+                  :class="['event-policy-outcome', `event-policy-outcome--${event.policy_outcome}`]"
+                >{{ policyOutcomeLabel(event.policy_outcome) }}</span>
+                <span v-if="event.retry_budget_used !== undefined" class="event-policy-detail">
+                  {{ t('components.requestEvents.policy.budget', { count: event.retry_budget_used }) }}
+                </span>
+                <span v-if="event.retry_delay_ms !== undefined" class="event-policy-detail">
+                  {{ t('components.requestEvents.policy.delay', { value: formatMilliseconds(event.retry_delay_ms) }) }}
+                </span>
+                <span v-if="event.retry_after_ms !== undefined" class="event-policy-detail">
+                  Retry-After {{ formatMilliseconds(event.retry_after_ms) }}
+                </span>
+              </div>
             </div>
           </article>
         </div>
@@ -316,6 +333,12 @@ const formatDuration = (value: number): string => {
   return `${duration.toFixed(2)}s`
 }
 
+const formatMilliseconds = (value: number): string => {
+  const milliseconds = Math.max(0, Number(value) || 0)
+  if (milliseconds < 1000) return `${Math.round(milliseconds)}ms`
+  return `${(milliseconds / 1000).toFixed(milliseconds % 1000 === 0 ? 0 : 2)}s`
+}
+
 const shortRequestId = (value: string): string => {
   if (!value) return '—'
   return value.length > 18 ? `${value.slice(0, 8)}…${value.slice(-6)}` : value
@@ -348,6 +371,43 @@ const outcomeLabel = (outcome: string): string => {
   if (outcome === 'client_aborted') return t('components.requestEvents.outcome.clientAborted')
   if (outcome === 'continued') return t('components.requestEvents.outcome.continued')
   return t('components.requestEvents.outcome.failed')
+}
+
+const hasPolicyMetadata = (event: RequestEvent): boolean => Boolean(
+  event.policy_trigger ||
+  event.policy_action ||
+  event.policy_outcome ||
+  event.retry_budget_used !== undefined ||
+  event.retry_delay_ms !== undefined ||
+  event.retry_after_ms !== undefined,
+)
+
+const policyTriggerLabel = (trigger: string): string => {
+  if (trigger === 'capacity') return 'Capacity'
+  if (trigger === 'http_429') return 'HTTP 429'
+  return trigger
+}
+
+const policyActionLabel = (action: string): string => {
+  const key = ({
+    pass_through: 'passThrough',
+    return_502: 'return502',
+    switch_provider: 'switchProvider',
+    retry_then_switch_provider: 'retryThenSwitch',
+  } as Record<string, string>)[action]
+  return key ? t(`components.requestEvents.policy.action.${key}`) : action
+}
+
+const policyOutcomeLabel = (outcome: string): string => {
+  const key = ({
+    retried: 'retried',
+    retry_cancelled: 'retryCancelled',
+    switch_requested: 'switchRequested',
+    switched_provider: 'switchedProvider',
+    passed_through: 'passedThrough',
+    returned_502: 'returned502',
+  } as Record<string, string>)[outcome]
+  return key ? t(`components.requestEvents.policy.outcome.${key}`) : outcome
 }
 
 const httpClass = (code: number): string => {
@@ -797,7 +857,8 @@ onUnmounted(() => {
 .event-kind-line,
 .event-provider-line,
 .event-transition,
-.event-meta-line {
+.event-meta-line,
+.event-policy-line {
   display: flex;
   align-items: center;
   min-width: 0;
@@ -874,6 +935,30 @@ onUnmounted(() => {
 .event-outcome--failed { color: #dc2626; }
 .event-outcome--client_aborted { color: #64748b; }
 .event-outcome--continued { color: #b45309; }
+
+.event-policy-line { margin-top: 7px; gap: 6px; }
+.event-policy-trigger,
+.event-policy-action,
+.event-policy-outcome,
+.event-policy-detail {
+  display: inline-flex;
+  min-height: 21px;
+  align-items: center;
+  padding: 0 7px;
+  border: 1px solid var(--mac-divider);
+  border-radius: 4px;
+  color: var(--mac-text-secondary);
+  background: color-mix(in srgb, var(--mac-surface-strong) 76%, transparent);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+}
+.event-policy-trigger { border-color: color-mix(in srgb, #d68b00 40%, var(--mac-divider)); color: #b06e00; font-weight: 700; }
+.event-policy-action { color: var(--mac-accent); }
+.event-policy-outcome { color: #2b7a5a; }
+.event-policy-outcome--retry_cancelled,
+.event-policy-outcome--returned_502 { color: #c33f3f; }
+.event-policy-outcome--switch_requested { color: #a96b00; }
+.event-policy-detail { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
 .events-state {
   display: flex;

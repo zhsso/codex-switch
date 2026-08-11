@@ -932,6 +932,7 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 		isStream := gjson.GetBytes(bodyBytes, "stream").Bool()
 		requestedModel := gjson.GetBytes(bodyBytes, "model").String()
 		trace.SetModel(requestedModel)
+		errorPolicy := newRequestErrorPolicyState(prs.errorHandlingConfigSnapshot())
 
 		// 如果未指定模型，记录警告但不拦截
 		if requestedModel == "" {
@@ -973,7 +974,7 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 			}
 
 			// 黑名单检查：跳过已拉黑的 provider
-			if isBlacklisted, until := prs.blacklistService.IsBlacklisted(kind, provider.Name); isBlacklisted {
+			if isBlacklisted, until := prs.isBlacklistedWithPolicySnapshot(kind, provider.Name, errorPolicy); isBlacklisted {
 				fmt.Printf("⛔ Provider %s 已拉黑，过期时间: %v\n", provider.Name, until.Format("15:04:05"))
 				skippedCount++
 				skippedBlacklist++
@@ -1023,12 +1024,11 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 		query := flattenQuery(c.Request.URL.Query())
 		clientHeaders := cloneHeaders(c.Request.Header)
 
-		// 获取拉黑功能开关状态
-		blacklistEnabled := prs.blacklistService.ShouldUseFixedMode()
+		// 错误处理配置按请求快照，热更新只影响后续新请求。
+		blacklistEnabled := useFixedBlacklistMode(errorPolicy.config.Blacklist)
 
-		// 【拉黑模式】：同 Provider 重试直到被拉黑，然后切换到下一个 Provider
-		// 单次客户端请求的重试次数可能低于拉黑阈值，
-		// 通过内部重试机制，在单次请求中累积足够失败次数触发拉黑
+		// 【拉黑模式】：按失败阈值限制同 Provider 的尝试次数，再切换到下一个 Provider。
+		// 黑名单失败计数按客户端请求去重，同一请求对每个 Provider 最多只记一次。
 		if blacklistEnabled {
 			// 缓存轮询设置（单次请求级别，避免重复读取配置文件）
 			roundRobinSettingEnabled := prs.isRoundRobinSettingEnabled()
@@ -1038,11 +1038,9 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 				fmt.Printf("[INFO] 🔒 拉黑模式（顺序调度）\n")
 			}
 
-			// 获取重试配置
-			retryConfig := prs.blacklistService.GetRetryConfig()
-			maxRetryPerProvider := retryConfig.FailureThreshold
-			retryWaitSeconds := retryConfig.RetryWaitSeconds
-			fmt.Printf("[INFO] 重试配置: 每 Provider 最多 %d 次重试，间隔 %d 秒\n",
+			maxRetryPerProvider := errorPolicy.config.Blacklist.FailureThreshold
+			retryWaitSeconds := errorPolicy.config.Blacklist.RetryWaitSeconds
+			fmt.Printf("[INFO] 重试配置: 每 Provider 最多 %d 次尝试，间隔 %d 秒\n",
 				maxRetryPerProvider, retryWaitSeconds)
 
 			var lastError error
@@ -1083,7 +1081,7 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 							continue
 						}
 						// 检查是否已被拉黑（跳过已拉黑的 provider）
-						if blacklisted, until := prs.blacklistService.IsBlacklisted(kind, provider.Name); blacklisted {
+						if blacklisted, until := prs.isBlacklistedWithPolicySnapshot(kind, provider.Name, errorPolicy); blacklisted {
 							fmt.Printf("[INFO] ⏭️ 跳过已拉黑的 Provider: %s (解禁时间: %v)\n", provider.Name, until)
 							continue
 						}
@@ -1114,7 +1112,7 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 							totalAttempts++
 
 							// 再次检查是否已被拉黑（重试过程中可能被拉黑）
-							if blacklisted, _ := prs.blacklistService.IsBlacklisted(kind, provider.Name); blacklisted {
+							if blacklisted, _ := prs.isBlacklistedWithPolicySnapshot(kind, provider.Name, errorPolicy); blacklisted {
 								fmt.Printf("[INFO] 🚫 Provider %s 已被拉黑，切换到下一个\n", provider.Name)
 								break
 							}
@@ -1126,19 +1124,21 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 							fmt.Printf("[INFO] [拉黑模式] Provider: %s (Level %d) | 重试 %d/%d | Model: %s\n",
 								provider.Name, level, retryCount+1, maxRetryPerProvider, effectiveModel)
 
-							attempt := trace.BeforeAttempt(provider.Name)
-							startTime := time.Now()
-							ok, err := prs.forwardRequest(c, kind, provider, effectiveEndpoint, query, clientHeaders, currentBodyBytes, isStream, effectiveModel, configGen)
-							duration := time.Since(startTime)
-							if err != nil {
-								trace.RecordForwardError(provider.Name, err, attempt, retryCount+1, duration)
+							policyResult := prs.forwardRequestWithPolicy(
+								c, kind, provider, effectiveEndpoint, query, clientHeaders,
+								currentBodyBytes, isStream, effectiveModel, configGen,
+								trace, retryCount+1, errorPolicy,
+							)
+							ok, err, duration := policyResult.OK, policyResult.Err, policyResult.Duration
+							if policyResult.Terminal {
+								return
 							}
 
 							if ok {
 								trace.MarkSucceeded()
 								fmt.Printf("[INFO] ✓ 成功: %s | 重试 %d 次 | 耗时: %.2fs\n",
 									provider.Name, retryCount+1, duration.Seconds())
-								if err := prs.blacklistService.RecordSuccess(kind, provider.Name); err != nil {
+								if err := prs.recordSuccessWithPolicySnapshot(kind, provider.Name, errorPolicy); err != nil {
 									fmt.Printf("[WARN] 清零失败计数失败: %v\n", err)
 								}
 								prs.setLastUsedProvider(kind, provider.Name)
@@ -1179,7 +1179,7 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 							// 但必须计入失败，否则半死的供应商永远不会被拉黑
 							if errors.Is(err, errUpstreamStreamAborted) {
 								trace.MarkFailed(err)
-								if err := prs.blacklistService.RecordFailureWithReason(kind, provider.Name, safeRelayError(err)); err != nil {
+								if err := prs.recordFailureWithPolicySnapshot(kind, provider.Name, safeRelayError(err), errorPolicy); err != nil {
 									fmt.Printf("[ERROR] 记录失败到黑名单失败: %v\n", err)
 								}
 								return
@@ -1195,16 +1195,20 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 							sawNonClientError = true
 
 							// 记录失败次数（可能触发拉黑）
-							if err := prs.blacklistService.RecordFailureWithReason(kind, provider.Name, safeRelayError(err)); err != nil {
+							if err := prs.recordFailureWithPolicySnapshot(kind, provider.Name, safeRelayError(err), errorPolicy); err != nil {
 								fmt.Printf("[ERROR] 记录失败到黑名单失败: %v\n", err)
 							}
 							if errors.Is(err, errUpstreamModelCapacity) {
 								fmt.Printf("[INFO] Provider %s 模型容量不足，立即切换到下一个 Provider\n", provider.Name)
 								break
 							}
+							if policyResult.Trigger != "" {
+								fmt.Printf("[INFO] Provider %s 命中 %s 策略 %s，切换到下一个 Provider\n", provider.Name, policyResult.Trigger, policyResult.Action)
+								break
+							}
 
 							// 检查是否刚被拉黑
-							if blacklisted, _ := prs.blacklistService.IsBlacklisted(kind, provider.Name); blacklisted {
+							if blacklisted, _ := prs.isBlacklistedWithPolicySnapshot(kind, provider.Name, errorPolicy); blacklisted {
 								fmt.Printf("[INFO] 🚫 Provider %s 达到失败阈值，已被拉黑，切换到下一个\n", provider.Name)
 								break
 							}
@@ -1284,14 +1288,14 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 
 			errorMsg := "未知错误"
 			if lastError != nil {
-				errorMsg = lastError.Error()
+				errorMsg = safeRelayError(lastError)
 			}
 			respondAllProvidersFailed(c, lastError, !sawNonClientError, gin.H{
 				"error":         fmt.Sprintf("所有 Provider 都失败或被拉黑，最后尝试: %s - %s", lastProvider, errorMsg),
 				"lastProvider":  lastProvider,
 				"totalAttempts": totalAttempts,
 				"mode":          "blacklist_retry",
-				"hint":          "拉黑模式已开启，同 Provider 重试到拉黑再切换。如需立即降级请关闭拉黑功能",
+				"hint":          "拉黑模式已开启；同一请求对每个 Provider 最多记一次失败，尝试耗尽后切换",
 			})
 			return
 		}
@@ -1341,7 +1345,7 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 					if attemptedProviders[strconv.FormatInt(provider.ID, 10)] {
 						continue
 					}
-					if blacklisted, _ := prs.blacklistService.IsBlacklisted(kind, provider.Name); blacklisted {
+					if blacklisted, _ := prs.isBlacklistedWithPolicySnapshot(kind, provider.Name, errorPolicy); blacklisted {
 						continue
 					}
 					if prs.isDailyCostBlocked(kind, provider) {
@@ -1373,12 +1377,14 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 					// 尝试发送请求
 					// 获取有效的端点（用户配置优先）
 					effectiveEndpoint := provider.GetEffectiveEndpoint(endpoint)
-					attempt := trace.BeforeAttempt(provider.Name)
-					startTime := time.Now()
-					ok, err := prs.forwardRequest(c, kind, provider, effectiveEndpoint, query, clientHeaders, currentBodyBytes, isStream, effectiveModel, configGen)
-					duration := time.Since(startTime)
-					if err != nil {
-						trace.RecordForwardError(provider.Name, err, attempt, i+1, duration)
+					policyResult := prs.forwardRequestWithPolicy(
+						c, kind, provider, effectiveEndpoint, query, clientHeaders,
+						currentBodyBytes, isStream, effectiveModel, configGen,
+						trace, i+1, errorPolicy,
+					)
+					ok, err, duration := policyResult.OK, policyResult.Err, policyResult.Duration
+					if policyResult.Terminal {
+						return
 					}
 
 					if ok {
@@ -1386,7 +1392,7 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 						fmt.Printf("[INFO]   ✓ Level %d 成功: %s | 耗时: %.2fs\n", level, provider.Name, duration.Seconds())
 
 						// 成功：清零连续失败计数
-						if err := prs.blacklistService.RecordSuccess(kind, provider.Name); err != nil {
+						if err := prs.recordSuccessWithPolicySnapshot(kind, provider.Name, errorPolicy); err != nil {
 							fmt.Printf("[WARN] 清零失败计数失败: %v\n", err)
 						}
 
@@ -1427,7 +1433,7 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 					// 上游 2xx 后中途断流：响应已部分写出，不能再降级，但必须计入失败
 					if errors.Is(err, errUpstreamStreamAborted) {
 						trace.MarkFailed(err)
-						if err := prs.blacklistService.RecordFailureWithReason(kind, provider.Name, safeRelayError(err)); err != nil {
+						if err := prs.recordFailureWithPolicySnapshot(kind, provider.Name, safeRelayError(err), errorPolicy); err != nil {
 							fmt.Printf("[ERROR] 记录失败到黑名单失败: %v\n", err)
 						}
 						return
@@ -1438,7 +1444,7 @@ func (prs *ProviderRelayService) proxyHandler(kind string, endpoint string) gin.
 						fmt.Printf("[INFO] 上游拒绝请求内容，不计供应商失败\n")
 					} else {
 						sawNonClientError = true
-						if err := prs.blacklistService.RecordFailureWithReason(kind, provider.Name, safeRelayError(err)); err != nil {
+						if err := prs.recordFailureWithPolicySnapshot(kind, provider.Name, safeRelayError(err), errorPolicy); err != nil {
 							fmt.Printf("[ERROR] 记录失败到黑名单失败: %v\n", err)
 						}
 					}
@@ -1649,7 +1655,8 @@ func (prs *ProviderRelayService) forwardRequest(
 		pool = prs.endpointCooldowns.Order(kind, provider.ID, pool)
 	}
 
-	var lastErr error
+	var representativeErr error
+	representativeRank := 0
 	primaryKey := normalizeURL(provider.APIURL)
 	for i, addr := range pool {
 		if i > 0 {
@@ -1682,7 +1689,11 @@ func (prs *ProviderRelayService) forwardRequest(
 			return true, nil
 		}
 
-		lastErr = err
+		rank := endpointErrorPolicyRank(err)
+		if rank >= representativeRank {
+			representativeErr = err
+			representativeRank = rank
+		}
 		if !multiAddress {
 			return false, err
 		}
@@ -1692,7 +1703,18 @@ func (prs *ProviderRelayService) forwardRequest(
 		prs.endpointCooldowns.MarkFailure(kind, provider.ID, addr, retryAfterOf(err))
 		fmt.Printf("[WARN] Provider %s 地址 %s 失败，冷却后改试下一地址: %s\n", provider.Name, sanitizeLogURL(addr), safeRelayError(err))
 	}
-	return false, fmt.Errorf("%w: %v", errEndpointPoolExhausted, lastErr)
+	return false, fmt.Errorf("%w: %w", errEndpointPoolExhausted, representativeErr)
+}
+
+func endpointErrorPolicyRank(err error) int {
+	switch policyTriggerForError(err) {
+	case PolicyTriggerCapacity:
+		return 3
+	case PolicyTriggerHTTP429:
+		return 2
+	default:
+		return 1
+	}
 }
 
 // forwardToAddress 向单个地址发一次请求并转发响应。
@@ -1826,8 +1848,17 @@ func (prs *ProviderRelayService) forwardToAddress(
 // 供地址冷却使用
 func newUpstreamStatusError(resp *xrequest.Response, status int, detail string) *upstreamStatusError {
 	e := &upstreamStatusError{status: status, detail: detail}
-	if status == http.StatusTooManyRequests && resp != nil && resp.RawResponse != nil {
-		e.retryAfter = parseRetryAfter(resp.RawResponse.Header.Get("Retry-After"), time.Now())
+	if resp != nil {
+		if resp.RawResponse != nil {
+			e.responseHeaders = resp.RawResponse.Header.Clone()
+			e.retryAfterHeader = resp.RawResponse.Header.Get("Retry-After")
+		}
+		if body := resp.String(); body != "" {
+			e.responseBody = []byte(body)
+		}
+	}
+	if status == http.StatusTooManyRequests {
+		e.retryAfter = parseRetryAfter(e.retryAfterHeader, time.Now())
 	}
 	return e
 }
@@ -1883,6 +1914,11 @@ func (prs *ProviderRelayService) relayResponseToClient(
 	}
 	if errors.Is(copyErr, errUpstreamModelCapacity) {
 		capacityErr := newUpstreamModelCapacityError(resp, resp.StatusCode(), "upstream model at capacity")
+		var statusErr *upstreamStatusError
+		if errors.As(capacityErr, &statusErr) {
+			statusErr.responseHeaders = probeWriter.header.Clone()
+			statusErr.responseBody = append([]byte(nil), probeWriter.pending.Bytes()...)
+		}
 		if !c.Writer.Written() {
 			fmt.Printf("[WARN] Provider %s 模型容量不足，响应尚未提交，可安全降级\n", provider.Name)
 			return false, capacityErr

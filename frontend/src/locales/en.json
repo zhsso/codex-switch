@@ -9,6 +9,7 @@
     "speedtest": "Speed Test",
     "logs": "Logs",
     "events": "Event Log",
+    "errorHandling": "Error handling",
     "capture": "Capture",
     "settings": "Settings",
     "toggleTheme": "Toggle light / dark theme",
@@ -506,10 +507,103 @@
         "attempt": "Attempt {count}",
         "retry": "Retry {count}"
       },
+      "policy": {
+        "budget": "Budget used {count}",
+        "delay": "Backoff {value}",
+        "action": {
+          "passThrough": "Pass through",
+          "return502": "Return 502",
+          "switchProvider": "Switch Provider",
+          "retryThenSwitch": "Retry, then switch"
+        },
+        "outcome": {
+          "retried": "Retried",
+          "retryCancelled": "Cancelled while waiting",
+          "switchRequested": "Switch requested",
+          "switchedProvider": "Provider switched",
+          "passedThrough": "Passed through",
+          "returned502": "Returned 502"
+        }
+      },
       "pagination": {
         "page": "Page {page}",
         "previous": "Previous page",
         "next": "Next page"
+      }
+    },
+    "errorHandling": {
+      "title": "Error handling",
+      "subtitle": "Upstream capacity, rate-limit, and automatic blacklist policies",
+      "loadFailed": "Failed to load error handling settings: ",
+      "saveFailed": "Failed to save error handling settings: ",
+      "saved": "Error handling settings saved",
+      "actions": {
+        "switch": "Switch Provider",
+        "retrySwitch": "Retry, then switch Provider",
+        "pass": "Pass through",
+        "return502": "Return structured 502"
+      },
+      "summary": {
+        "title": "Today",
+        "retries": "Retry actions",
+        "switches": "Provider switches",
+        "passed": "Passed through",
+        "returned502": "Returned 502",
+        "details": "View detailed events"
+      },
+      "tabs": {
+        "label": "Error handling views",
+        "policies": "Policies",
+        "blacklist": "Automatic blacklist"
+      },
+      "policy": {
+        "title": "Configurable rules",
+        "scope": "Responses API · Global",
+        "capacity": "Model at capacity",
+        "rateLimit": "Request rate limited",
+        "endpointPool": "Current endpoint pool",
+        "providerPolicy": "Provider policy",
+        "action": "After pool exhaustion"
+      },
+      "retry": {
+        "title": "Request retry budget",
+        "sharedBudget": "Additional retries shared by Capacity and 429",
+        "sharedBudgetHint": "Initial endpoint and Provider attempts do not consume this budget",
+        "addressFirst": "Endpoint pool first"
+      },
+      "fixed": {
+        "title": "Fixed rules",
+        "readOnly": "Read only",
+        "trigger": "Trigger",
+        "route": "Handling",
+        "terminal": "Terminal",
+        "content": "Request content error",
+        "noFailure": "No Provider failure; try other Providers",
+        "providerFailure": "Record Provider failure",
+        "nextProvider": "Next Provider",
+        "endpointFirst": "Endpoint pool, then switch Provider",
+        "clientDisconnect": "Client disconnect",
+        "stopNoFailure": "Stop without recording a failure",
+        "streamCommitted": "Interruption after stream commit",
+        "stopWithFailure": "Stop and record a failure",
+        "keepStream": "Keep emitted stream",
+        "concurrency": "Concurrency exhausted",
+        "wait": "Bounded wait"
+      },
+      "blacklist": {
+        "title": "Automatic blacklist",
+        "scope": "Global Provider failure state",
+        "basic": "Base policy",
+        "fallbackMode": "When level mode is off",
+        "fixed": "Blacklist for a fixed duration",
+        "none": "Do not blacklist; degrade immediately",
+        "retryAndDedupe": "Deduplication and same-Provider retry",
+        "dedupe": "Failure deduplication window",
+        "retryWait": "Same-Provider retry wait",
+        "levelDurations": "L1–L5 blacklist durations",
+        "degradeInterval": "Normal degradation interval",
+        "forgiveness": "Forgiveness trigger",
+        "jumpWindow": "Jump-penalty window"
       }
     },
     "general": {

@@ -65,6 +65,19 @@ func NewBlacklistService(settingsService *SettingsService, notificationService *
 
 // RecordSuccess 记录 provider 成功，清零连续失败计数，执行降级和宽恕逻辑
 func (bs *BlacklistService) RecordSuccess(platform string, providerName string) error {
+	config := defaultErrorHandlingConfig().Blacklist
+	if bs.settingsService != nil {
+		current, err := bs.settingsService.GetErrorHandlingConfig()
+		if err != nil {
+			log.Printf("⚠️  获取统一错误处理配置失败: %v", err)
+		} else {
+			config = current.Blacklist
+		}
+	}
+	return bs.recordSuccessWithSnapshot(platform, providerName, config)
+}
+
+func (bs *BlacklistService) recordSuccessWithSnapshot(platform string, providerName string, config ErrorHandlingBlacklistConfig) error {
 	if err := requireCodexPlatform(platform); err != nil {
 		return err
 	}
@@ -77,12 +90,7 @@ func (bs *BlacklistService) RecordSuccess(platform string, providerName string) 
 		return fmt.Errorf("获取数据库连接失败: %w", err)
 	}
 
-	// 获取等级拉黑配置
-	levelConfig, err := bs.settingsService.GetBlacklistLevelConfig()
-	if err != nil {
-		log.Printf("⚠️  获取等级拉黑配置失败: %v", err)
-		levelConfig = DefaultBlacklistLevelConfig()
-	}
+	levelConfig := blacklistLevelConfigFromCanonical(config)
 
 	// 查询现有记录
 	var id int
@@ -209,6 +217,14 @@ func (bs *BlacklistService) RecordFailure(platform string, providerName string) 
 
 // RecordFailureWithReason 记录失败及一个不含请求/响应正文的错误摘要。
 func (bs *BlacklistService) RecordFailureWithReason(platform string, providerName string, reason string) error {
+	config, err := bs.settingsService.GetErrorHandlingConfig()
+	if err != nil {
+		return fmt.Errorf("读取统一错误处理配置失败: %w", err)
+	}
+	return bs.recordFailureWithReasonSnapshot(platform, providerName, reason, config.Blacklist)
+}
+
+func (bs *BlacklistService) recordFailureWithReasonSnapshot(platform string, providerName string, reason string, config ErrorHandlingBlacklistConfig) error {
 	if err := requireCodexPlatform(platform); err != nil {
 		return err
 	}
@@ -218,7 +234,7 @@ func (bs *BlacklistService) RecordFailureWithReason(platform string, providerNam
 	defer bs.mu.Unlock()
 	providerName = ResolveProviderAlias(platform, providerName)
 	// 检查拉黑功能是否启用
-	if !bs.settingsService.IsBlacklistEnabled() {
+	if !config.Enabled {
 		log.Printf("🚫 拉黑功能已关闭，跳过 provider %s/%s 的失败记录", platform, providerName)
 		return nil
 	}
@@ -228,22 +244,12 @@ func (bs *BlacklistService) RecordFailureWithReason(platform string, providerNam
 		return fmt.Errorf("获取数据库连接失败: %w", err)
 	}
 
-	// 获取等级拉黑配置
-	levelConfig, err := bs.settingsService.GetBlacklistLevelConfig()
-	if err != nil {
-		log.Printf("⚠️  获取等级拉黑配置失败: %v", err)
-		levelConfig = DefaultBlacklistLevelConfig()
-	}
+	levelConfig := blacklistLevelConfigFromCanonical(config)
 
 	// 如果功能关闭，使用旧的固定拉黑模式
 	if !levelConfig.EnableLevelBlacklist {
-		// 从数据库读取配置（优先使用数据库配置而非默认值）
-		threshold, duration, err := bs.settingsService.GetBlacklistSettings()
-		if err != nil {
-			log.Printf("⚠️  获取数据库拉黑配置失败: %v，使用默认值", err)
-			threshold = levelConfig.FailureThreshold
-			duration = levelConfig.FallbackDurationMinutes
-		}
+		threshold := config.FailureThreshold
+		duration := config.FallbackDurationMinutes
 		return bs.recordFailureFixedMode(platform, providerName, levelConfig.FallbackMode, duration, threshold, reason)
 	}
 
@@ -559,13 +565,25 @@ func (bs *BlacklistService) getLevelDuration(level int, config *BlacklistLevelCo
 
 // IsBlacklisted 检查 provider 是否在黑名单中
 func (bs *BlacklistService) IsBlacklisted(platform string, providerName string) (bool, *time.Time) {
+	if requireCodexPlatform(platform) != nil || bs == nil || bs.settingsService == nil {
+		return false, nil
+	}
+	config, err := bs.settingsService.GetErrorHandlingConfig()
+	if err != nil {
+		log.Printf("⚠️  获取统一错误处理配置失败: %v，按未拉黑处理", err)
+		return false, nil
+	}
+	return bs.isBlacklistedWithEnabled(platform, providerName, config.Blacklist.Enabled)
+}
+
+func (bs *BlacklistService) isBlacklistedWithEnabled(platform string, providerName string, enabled bool) (bool, *time.Time) {
 	if requireCodexPlatform(platform) != nil {
 		return false, nil
 	}
 	platform = CodexPlatform
 	providerName = ResolveProviderAlias(platform, providerName)
 	// 如果拉黑功能已关闭，始终返回未拉黑
-	if !bs.settingsService.IsBlacklistEnabled() {
+	if !enabled {
 		return false, nil
 	}
 

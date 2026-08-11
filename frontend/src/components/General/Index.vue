@@ -7,14 +7,6 @@ import ThemeSetting from '../Setting/ThemeSetting.vue'
 import { Call, Events } from '../../runtime'
 import { fetchAppSettings, saveAppSettings, type AppSettings } from '../../services/appSettings'
 import {
-  getBlacklistEnabled,
-  getBlacklistSettings,
-  getLevelBlacklistEnabled,
-  setBlacklistEnabled,
-  setLevelBlacklistEnabled,
-  updateBlacklistSettings,
-} from '../../services/settings'
-import {
   GetSyncStatus,
   RestoreBuiltinPricing,
   SyncNow,
@@ -56,10 +48,6 @@ const timezoneOptions = computed(() => Array.from(new Set([
   ...supportedTimezones,
 ])).filter(Boolean))
 
-const blacklistEnabled = ref(false)
-const levelBlacklistEnabled = ref(false)
-const blacklistThreshold = ref(3)
-const blacklistDuration = ref(30)
 const modelSync = ref<ModelSyncStatus | null>(null)
 const loading = ref(true)
 const saving = ref(false)
@@ -86,18 +74,11 @@ function showNotice(kind: 'success' | 'error', text: string) {
 async function load() {
   loading.value = true
   try {
-    const [saved, blacklist, enabled, levelEnabled, syncStatus] = await Promise.all([
+    const [saved, syncStatus] = await Promise.all([
       fetchAppSettings(),
-      getBlacklistSettings(),
-      getBlacklistEnabled(),
-      getLevelBlacklistEnabled(),
       GetSyncStatus(),
     ])
     Object.assign(settings, saved)
-    blacklistThreshold.value = blacklist.failureThreshold
-    blacklistDuration.value = blacklist.durationMinutes
-    blacklistEnabled.value = enabled
-    levelBlacklistEnabled.value = levelEnabled
     modelSync.value = syncStatus
   } catch (error) {
     showNotice('error', t('components.general.label.settingsLoadFailed') + ': ' + extractErrorMessage(error))
@@ -111,15 +92,10 @@ async function save() {
   saving.value = true
   notice.value = null
   settings.history_retention_days = Math.min(3650, Math.max(1, Math.floor(settings.history_retention_days || 30)))
-  blacklistThreshold.value = Math.min(10, Math.max(1, Math.floor(blacklistThreshold.value || 3)))
-  blacklistDuration.value = Math.min(10080, Math.max(1, Math.floor(blacklistDuration.value || 30)))
   try {
     const saved = await saveAppSettings({ ...settings })
     Object.assign(settings, saved)
     await Promise.all([
-      setBlacklistEnabled(blacklistEnabled.value),
-      setLevelBlacklistEnabled(levelBlacklistEnabled.value),
-      updateBlacklistSettings(blacklistThreshold.value, blacklistDuration.value),
       Call.ByName(
         'codeswitch/services.HealthCheckService.SetAutoAvailabilityPolling',
         settings.auto_connectivity_test,
@@ -241,22 +217,6 @@ onUnmounted(() => {
               {{ timezone }}
             </option>
           </select>
-        </ListRow>
-      </section>
-
-      <section class="settings-section">
-        <h2>{{ t('components.general.title.blacklist') }}</h2>
-        <ListRow :label="t('components.general.label.enableBlacklist')" :sub-label="t('components.general.label.enableBlacklistHint')">
-          <label class="mac-switch"><input v-model="blacklistEnabled" type="checkbox"><span /></label>
-        </ListRow>
-        <ListRow :label="t('components.general.label.enableLevelBlacklist')" :sub-label="t('components.general.label.enableLevelBlacklistHint')">
-          <label class="mac-switch"><input v-model="levelBlacklistEnabled" type="checkbox"><span /></label>
-        </ListRow>
-        <ListRow :label="t('components.general.label.blacklistThreshold')">
-          <div class="number-control"><input v-model.number="blacklistThreshold" type="number" min="1" max="10"><span>{{ t('components.general.label.times') }}</span></div>
-        </ListRow>
-        <ListRow v-if="!levelBlacklistEnabled" :label="t('components.general.label.blacklistDuration')">
-          <div class="number-control"><input v-model.number="blacklistDuration" type="number" min="1" max="10080"><span>{{ t('components.general.label.minutes') }}</span></div>
         </ListRow>
       </section>
 

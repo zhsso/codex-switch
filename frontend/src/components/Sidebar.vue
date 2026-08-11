@@ -85,6 +85,7 @@ const navItems: NavItem[] = [
   { path: '/speedtest', icon: 'zap', labelKey: 'sidebar.speedtest', isNew: true },
   { path: '/logs', icon: 'bar-chart', labelKey: 'sidebar.logs' },
   { path: '/events', icon: 'alert-triangle', labelKey: 'sidebar.events', isNew: true },
+  { path: '/error-handling', icon: 'shield-alert', labelKey: 'sidebar.errorHandling', isNew: true },
   { path: '/capture', icon: 'search', labelKey: 'sidebar.capture', isNew: true },
   { path: '/settings', icon: 'settings', labelKey: 'sidebar.settings' },
 ]
@@ -161,6 +162,13 @@ const navigate = (path: string) => {
           <path d="M10.3 3.9 2.2 18a2 2 0 0 0 1.7 3h16.2a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"></path>
           <line x1="12" y1="9" x2="12" y2="13"></line>
           <line x1="12" y1="17" x2="12.01" y2="17"></line>
+        </svg>
+
+        <!-- Shield Alert -->
+        <svg v-else-if="item.icon === 'shield-alert'" class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M20 13c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V5l8-3 8 3v8Z"></path>
+          <path d="M12 8v4"></path>
+          <path d="M12 16h.01"></path>
         </svg>
 
         <!-- Settings -->

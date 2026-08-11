@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/daodao97/xgo/xdb"
 )
 
 // GetBlacklistLevelConfigPath 获取等级拉黑配置文件路径
@@ -17,19 +19,15 @@ func GetBlacklistLevelConfigPath() (string, error) {
 	return filepath.Join(configDir, "blacklist-config.json"), nil
 }
 
-// GetBlacklistLevelConfig 获取等级拉黑配置
-// 【修复】开关状态从数据库读取，其他配置从 JSON 文件读取
-func (ss *SettingsService) GetBlacklistLevelConfig() (*BlacklistLevelConfig, error) {
+// loadLegacyBlacklistLevelConfig reads the pre-v1 effective configuration.
+// It is used only when the canonical error_handling_config key is absent or corrupt.
+func loadLegacyBlacklistLevelConfig() (*BlacklistLevelConfig, error) {
 	configPath, err := GetBlacklistLevelConfigPath()
 	if err != nil {
 		return nil, err
 	}
 
-	var config *BlacklistLevelConfig
-
-	// 【修复】始终以默认配置为基础，再用 JSON 覆盖存在的字段
-	// 这样旧版 JSON 中没有的新字段（如 RetryWaitSeconds）会保留默认值，而不是零值
-	config = DefaultBlacklistLevelConfig()
+	config := DefaultBlacklistLevelConfig()
 
 	// 如果配置文件存在，用其内容覆盖默认值
 	if _, err := os.Stat(configPath); err == nil {
@@ -43,45 +41,68 @@ func (ss *SettingsService) GetBlacklistLevelConfig() (*BlacklistLevelConfig, err
 			return nil, fmt.Errorf("解析配置文件失败: %w", err)
 		}
 	}
-	// 如果文件不存在，直接使用默认配置（已在上面初始化）
-
-	// 【关键修复】从数据库读取开关状态，覆盖 JSON 文件中的值
-	// 因为 UI 开关是通过 SetLevelBlacklistEnabled() 写入数据库的
-	dbEnabled, err := ss.GetLevelBlacklistEnabled()
-	if err == nil {
-		config.EnableLevelBlacklist = dbEnabled
+	if db, dbErr := xdb.DB("default"); dbErr == nil {
+		var enabled string
+		if queryErr := db.QueryRow(`SELECT value FROM app_settings WHERE key = 'blacklist_level_enabled'`).Scan(&enabled); queryErr == nil {
+			config.EnableLevelBlacklist = enabled == "true"
+		}
+		var threshold int
+		if queryErr := db.QueryRow(`SELECT CAST(value AS INTEGER) FROM app_settings WHERE key = 'blacklist_failure_threshold'`).Scan(&threshold); queryErr == nil && threshold > 0 {
+			config.FailureThreshold = threshold
+		}
 	}
-	// 如果数据库读取失败，保留 JSON 文件中的值（向后兼容）
-
-	// 【关键修复】从数据库读取阈值，覆盖 JSON 文件中的值
-	// 因为 UI 设置的阈值是通过 UpdateBlacklistSettings() 写入数据库的
-	dbThreshold, _, err := ss.GetBlacklistSettings()
-	if err == nil && dbThreshold > 0 {
-		config.FailureThreshold = dbThreshold
-	}
-	// 如果数据库读取失败，保留 JSON 文件中的值（向后兼容）
-
 	return config, nil
 }
 
-// SaveBlacklistLevelConfig 保存等级拉黑配置
+// GetBlacklistLevelConfig keeps the legacy RPC shape while reading the
+// canonical configuration.
+func (ss *SettingsService) GetBlacklistLevelConfig() (*BlacklistLevelConfig, error) {
+	config, err := ss.GetErrorHandlingConfig()
+	if err != nil {
+		return nil, err
+	}
+	return blacklistLevelConfigFromCanonical(config.Blacklist), nil
+}
+
+func blacklistLevelConfigFromCanonical(config ErrorHandlingBlacklistConfig) *BlacklistLevelConfig {
+	return &BlacklistLevelConfig{
+		EnableLevelBlacklist:       config.EnableLevelBlacklist,
+		FailureThreshold:           config.FailureThreshold,
+		DedupeWindowSeconds:        config.DedupeWindowSeconds,
+		RetryWaitSeconds:           config.RetryWaitSeconds,
+		NormalDegradeIntervalHours: config.NormalDegradeIntervalHours,
+		ForgivenessHours:           config.ForgivenessHours,
+		JumpPenaltyWindowHours:     config.JumpPenaltyWindowHours,
+		L1DurationMinutes:          config.L1DurationMinutes,
+		L2DurationMinutes:          config.L2DurationMinutes,
+		L3DurationMinutes:          config.L3DurationMinutes,
+		L4DurationMinutes:          config.L4DurationMinutes,
+		L5DurationMinutes:          config.L5DurationMinutes,
+		FallbackMode:               config.FallbackMode,
+		FallbackDurationMinutes:    config.FallbackDurationMinutes,
+	}
+}
+
+// SaveBlacklistLevelConfig is retained for callers outside the RPC registry.
+// Fields which were historically overridden by database settings remain owned
+// by their dedicated legacy mutations.
 func (ss *SettingsService) SaveBlacklistLevelConfig(config *BlacklistLevelConfig) error {
-	configPath, err := GetBlacklistLevelConfigPath()
-	if err != nil {
-		return err
+	if config == nil {
+		return fmt.Errorf("等级拉黑配置不能为空")
 	}
-
-	// 序列化配置
-	data, err := json.MarshalIndent(config, "", "  ")
-	if err != nil {
-		return fmt.Errorf("序列化配置失败: %w", err)
-	}
-
-	if err := atomicWriteFile(configPath, data, 0o600); err != nil {
-		return fmt.Errorf("原子写入配置文件失败: %w", err)
-	}
-
-	return nil
+	return ss.mutateErrorHandlingConfig(func(current *ErrorHandlingConfig) {
+		current.Blacklist.DedupeWindowSeconds = config.DedupeWindowSeconds
+		current.Blacklist.RetryWaitSeconds = config.RetryWaitSeconds
+		current.Blacklist.NormalDegradeIntervalHours = config.NormalDegradeIntervalHours
+		current.Blacklist.ForgivenessHours = config.ForgivenessHours
+		current.Blacklist.JumpPenaltyWindowHours = config.JumpPenaltyWindowHours
+		current.Blacklist.L1DurationMinutes = config.L1DurationMinutes
+		current.Blacklist.L2DurationMinutes = config.L2DurationMinutes
+		current.Blacklist.L3DurationMinutes = config.L3DurationMinutes
+		current.Blacklist.L4DurationMinutes = config.L4DurationMinutes
+		current.Blacklist.L5DurationMinutes = config.L5DurationMinutes
+		current.Blacklist.FallbackMode = config.FallbackMode
+	})
 }
 
 // UpdateBlacklistLevelConfig 更新等级拉黑配置
@@ -104,12 +125,8 @@ func validateBlacklistLevelConfig(config *BlacklistLevelConfig) error {
 		return fmt.Errorf("去重窗口必须在 1-300 秒之间")
 	}
 
-	// RetryWaitSeconds 必须大于去重窗口，否则同 Provider 重试落在去重窗内不会计入失败次数
 	if config.RetryWaitSeconds < 1 || config.RetryWaitSeconds > 300 {
 		return fmt.Errorf("重试等待时间必须在 1-300 秒之间")
-	}
-	if config.RetryWaitSeconds <= config.DedupeWindowSeconds {
-		return fmt.Errorf("重试等待时间必须大于去重窗口（%d 秒）", config.DedupeWindowSeconds)
 	}
 
 	if config.NormalDegradeIntervalHours < 0.1 || config.NormalDegradeIntervalHours > 24 {

@@ -19,42 +19,63 @@ const (
 // RequestEvent is one sanitized item in an inbound request's relay timeline.
 // Payloads and credentials are deliberately absent from this structure.
 type RequestEvent struct {
-	ID           int64   `json:"id"`
-	RequestID    string  `json:"request_id"`
-	Platform     string  `json:"platform"`
-	Model        string  `json:"model"`
-	EventType    string  `json:"event_type"`
-	Provider     string  `json:"provider"`
-	FromProvider string  `json:"from_provider"`
-	ToProvider   string  `json:"to_provider"`
-	Attempt      int     `json:"attempt"`
-	Retry        int     `json:"retry"`
-	HTTPCode     int     `json:"http_code"`
-	ErrorType    string  `json:"error_type"`
-	ErrorCode    string  `json:"error_code"`
-	Message      string  `json:"message"`
-	DurationSec  float64 `json:"duration_sec"`
-	Outcome      string  `json:"outcome"`
-	CreatedAt    string  `json:"created_at"`
+	ID              int64   `json:"id"`
+	RequestID       string  `json:"request_id"`
+	Platform        string  `json:"platform"`
+	Model           string  `json:"model"`
+	EventType       string  `json:"event_type"`
+	Provider        string  `json:"provider"`
+	FromProvider    string  `json:"from_provider"`
+	ToProvider      string  `json:"to_provider"`
+	Attempt         int     `json:"attempt"`
+	Retry           int     `json:"retry"`
+	HTTPCode        int     `json:"http_code"`
+	ErrorType       string  `json:"error_type"`
+	ErrorCode       string  `json:"error_code"`
+	Message         string  `json:"message"`
+	DurationSec     float64 `json:"duration_sec"`
+	Outcome         string  `json:"outcome"`
+	PolicyTrigger   string  `json:"policy_trigger,omitempty"`
+	PolicyAction    string  `json:"policy_action,omitempty"`
+	PolicyOutcome   string  `json:"policy_outcome,omitempty"`
+	RetryBudgetUsed *int    `json:"retry_budget_used,omitempty"`
+	RetryDelayMS    *int64  `json:"retry_delay_ms,omitempty"`
+	RetryAfterMS    *int64  `json:"retry_after_ms,omitempty"`
+	CreatedAt       string  `json:"created_at"`
 }
 
 // RequestEventInput is the write-side form of RequestEvent.
 type RequestEventInput struct {
-	RequestID    string
-	Platform     string
-	Model        string
-	EventType    string
-	Provider     string
-	FromProvider string
-	ToProvider   string
-	Attempt      int
-	Retry        int
-	HTTPCode     int
-	ErrorType    string
-	ErrorCode    string
-	Message      string
-	DurationSec  float64
-	Outcome      string
+	RequestID       string
+	Platform        string
+	Model           string
+	EventType       string
+	Provider        string
+	FromProvider    string
+	ToProvider      string
+	Attempt         int
+	Retry           int
+	HTTPCode        int
+	ErrorType       string
+	ErrorCode       string
+	Message         string
+	DurationSec     float64
+	Outcome         string
+	PolicyTrigger   string
+	PolicyAction    string
+	PolicyOutcome   string
+	RetryBudgetUsed *int
+	RetryDelayMS    *int64
+	RetryAfterMS    *int64
+}
+
+type PolicyEventMetadata struct {
+	Trigger         string
+	Action          string
+	Outcome         string
+	RetryBudgetUsed *int
+	RetryDelayMS    *int64
+	RetryAfterMS    *int64
 }
 
 type RequestEventService struct{}
@@ -67,8 +88,10 @@ const requestEventInsertSQL = `
 	INSERT INTO request_event_log (
 		request_id, platform, model, event_type, provider,
 		from_provider, to_provider, attempt, retry, http_code,
-		error_type, error_code, message, duration_sec, outcome
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		error_type, error_code, message, duration_sec, outcome,
+		policy_trigger, policy_action, policy_outcome,
+		retry_budget_used, retry_delay_ms, retry_after_ms
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 func (s *RequestEventService) Record(input RequestEventInput) error {
@@ -101,6 +124,12 @@ func (s *RequestEventService) Record(input RequestEventInput) error {
 		truncateRequestEventMessage(redactSensitiveText(input.Message)),
 		input.DurationSec,
 		strings.TrimSpace(input.Outcome),
+		nullableRequestEventText(input.PolicyTrigger),
+		nullableRequestEventText(input.PolicyAction),
+		nullableRequestEventText(input.PolicyOutcome),
+		input.RetryBudgetUsed,
+		input.RetryDelayMS,
+		input.RetryAfterMS,
 	}
 
 	if GlobalDBQueue != nil {
@@ -112,6 +141,14 @@ func (s *RequestEventService) Record(input RequestEventInput) error {
 	}
 	_, err = db.Exec(requestEventInsertSQL, args...)
 	return err
+}
+
+func nullableRequestEventText(value string) interface{} {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 func truncateRequestEventMessage(message string) string {
@@ -146,6 +183,7 @@ type relayRequestTrace struct {
 	hasIncident    bool
 	succeeded      bool
 	completed      bool
+	pendingPolicy  PolicyEventMetadata
 }
 
 func newRelayRequestTrace(service *RequestEventService, platform string) *relayRequestTrace {
@@ -178,24 +216,43 @@ func (trace *relayRequestTrace) BeforeAttempt(provider string) int {
 	if trace.current != "" && provider != "" && trace.current != provider {
 		trace.hasIncident = true
 		_ = trace.record(RequestEventInput{
-			RequestID:    trace.requestID,
-			Platform:     trace.platform,
-			Model:        trace.model,
-			EventType:    RequestEventSwitch,
-			FromProvider: trace.current,
-			ToProvider:   provider,
-			Attempt:      trace.attempt,
-			ErrorType:    "provider_switch",
-			Message:      trace.lastErrorMessage(),
-			Outcome:      "continued",
+			RequestID:       trace.requestID,
+			Platform:        trace.platform,
+			Model:           trace.model,
+			EventType:       RequestEventSwitch,
+			FromProvider:    trace.current,
+			ToProvider:      provider,
+			Attempt:         trace.attempt,
+			ErrorType:       "provider_switch",
+			Message:         trace.lastErrorMessage(),
+			Outcome:         "continued",
+			PolicyTrigger:   trace.pendingPolicy.Trigger,
+			PolicyAction:    trace.pendingPolicy.Action,
+			PolicyOutcome:   trace.pendingPolicy.Outcome,
+			RetryBudgetUsed: trace.pendingPolicy.RetryBudgetUsed,
+			RetryDelayMS:    trace.pendingPolicy.RetryDelayMS,
+			RetryAfterMS:    trace.pendingPolicy.RetryAfterMS,
 		})
+		trace.pendingPolicy = PolicyEventMetadata{}
 	}
 	trace.current = provider
 	trace.lastProvider = provider
 	return trace.attempt
 }
 
+func (trace *relayRequestTrace) SetPendingPolicySwitch(policy PolicyEventMetadata) {
+	if trace == nil {
+		return
+	}
+	policy.Outcome = "switched_provider"
+	trace.pendingPolicy = policy
+}
+
 func (trace *relayRequestTrace) RecordForwardError(provider string, err error, attempt, retry int, duration time.Duration) {
+	trace.RecordForwardErrorWithPolicy(provider, err, attempt, retry, duration, PolicyEventMetadata{})
+}
+
+func (trace *relayRequestTrace) RecordForwardErrorWithPolicy(provider string, err error, attempt, retry int, duration time.Duration, policy PolicyEventMetadata) {
 	if trace == nil {
 		return
 	}
@@ -213,19 +270,25 @@ func (trace *relayRequestTrace) RecordForwardError(provider string, err error, a
 	}
 	errorType, errorCode, message, httpCode := requestEventErrorDetails(err)
 	_ = trace.record(RequestEventInput{
-		RequestID:   trace.requestID,
-		Platform:    trace.platform,
-		Model:       trace.model,
-		EventType:   RequestEventError,
-		Provider:    strings.TrimSpace(provider),
-		Attempt:     attempt,
-		Retry:       retry,
-		HTTPCode:    httpCode,
-		ErrorType:   errorType,
-		ErrorCode:   errorCode,
-		Message:     message,
-		DurationSec: duration.Seconds(),
-		Outcome:     outcome,
+		RequestID:       trace.requestID,
+		Platform:        trace.platform,
+		Model:           trace.model,
+		EventType:       RequestEventError,
+		Provider:        strings.TrimSpace(provider),
+		Attempt:         attempt,
+		Retry:           retry,
+		HTTPCode:        httpCode,
+		ErrorType:       errorType,
+		ErrorCode:       errorCode,
+		Message:         message,
+		DurationSec:     duration.Seconds(),
+		Outcome:         outcome,
+		PolicyTrigger:   policy.Trigger,
+		PolicyAction:    policy.Action,
+		PolicyOutcome:   policy.Outcome,
+		RetryBudgetUsed: policy.RetryBudgetUsed,
+		RetryDelayMS:    policy.RetryDelayMS,
+		RetryAfterMS:    policy.RetryAfterMS,
 	})
 }
 

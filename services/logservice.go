@@ -1,6 +1,7 @@
 package services
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -18,6 +19,19 @@ const timeLayout = "2006-01-02 15:04:05"
 type LogService struct {
 	pricing         *modelpricing.Service
 	providerService *ProviderService
+	appSettings     *AppSettingsService
+}
+
+type ErrorHandlingTodaySummary struct {
+	Timezone              string `json:"timezone"`
+	StartUTC              string `json:"start_utc"`
+	EndUTC                string `json:"end_utc"`
+	CapacityHits          int    `json:"capacity_hits"`
+	HTTP429Hits           int    `json:"http_429_hits"`
+	RetryActions          int    `json:"retry_actions"`
+	ProviderSwitchActions int    `json:"provider_switch_actions"`
+	PassThroughRequests   int    `json:"pass_through_requests"`
+	Returned502Requests   int    `json:"returned_502_requests"`
 }
 
 type costContext struct {
@@ -92,6 +106,70 @@ func NewLogService(providerServices ...*ProviderService) *LogService {
 		providerService = providerServices[0]
 	}
 	return &LogService{pricing: svc, providerService: providerService}
+}
+
+func (ls *LogService) SetAppSettingsService(settings *AppSettingsService) {
+	if ls != nil {
+		ls.appSettings = settings
+	}
+}
+
+func (ls *LogService) GetErrorHandlingTodaySummary() (*ErrorHandlingTodaySummary, error) {
+	timezone := defaultAppTimezone
+	if ls != nil && ls.appSettings != nil {
+		settings, err := ls.appSettings.GetAppSettings()
+		if err != nil {
+			return nil, fmt.Errorf("读取应用时区失败: %w", err)
+		}
+		timezone = settings.Timezone
+	}
+	location, err := time.LoadLocation(timezone)
+	if err != nil {
+		return nil, fmt.Errorf("加载应用时区 %q 失败: %w", timezone, err)
+	}
+	now := time.Now().In(location)
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, location).UTC()
+	end := start.In(location).AddDate(0, 0, 1).UTC()
+
+	summary := &ErrorHandlingTodaySummary{
+		Timezone: timezone,
+		StartUTC: start.Format(timeLayout),
+		EndUTC:   end.Format(timeLayout),
+	}
+	db, err := xdb.DB("default")
+	if err != nil {
+		return nil, err
+	}
+	query := `SELECT
+		COUNT(DISTINCT CASE WHEN policy_trigger = ? THEN request_id END),
+		COUNT(DISTINCT CASE WHEN policy_trigger = ? THEN request_id END),
+		COALESCE(SUM(CASE WHEN policy_outcome = 'retried' THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN event_type = ? AND policy_outcome = 'switched_provider' THEN 1 ELSE 0 END), 0),
+		COUNT(DISTINCT CASE WHEN policy_outcome = 'passed_through' THEN request_id END),
+		COUNT(DISTINCT CASE WHEN policy_outcome = 'returned_502' THEN request_id END)
+	FROM request_event_log
+	WHERE platform = ? AND created_at >= ? AND created_at < ?`
+	if err := db.QueryRow(query,
+		PolicyTriggerCapacity,
+		PolicyTriggerHTTP429,
+		RequestEventSwitch,
+		CodexPlatform,
+		summary.StartUTC,
+		summary.EndUTC,
+	).Scan(
+		&summary.CapacityHits,
+		&summary.HTTP429Hits,
+		&summary.RetryActions,
+		&summary.ProviderSwitchActions,
+		&summary.PassThroughRequests,
+		&summary.Returned502Requests,
+	); err != nil {
+		if isNoSuchTableErr(err) {
+			return summary, nil
+		}
+		return nil, err
+	}
+	return summary, nil
 }
 
 func (ls *LogService) newCostContext() (*costContext, error) {
@@ -376,8 +454,10 @@ func (ls *LogService) ListRequestEvents(
 	}
 	query := `
 		SELECT id, request_id, platform, model, event_type, provider,
-			from_provider, to_provider, attempt, retry, http_code,
-			error_type, error_code, message, duration_sec, outcome, created_at
+				from_provider, to_provider, attempt, retry, http_code,
+				error_type, error_code, message, duration_sec, outcome,
+				policy_trigger, policy_action, policy_outcome,
+				retry_budget_used, retry_delay_ms, retry_after_ms, created_at
 		FROM request_event_log
 		WHERE platform = ? AND created_at >= ?`
 	args := []interface{}{CodexPlatform, requestEventCutoff(days)}
@@ -414,6 +494,8 @@ func (ls *LogService) ListRequestEvents(
 	events := make([]RequestEvent, 0, limit)
 	for rows.Next() {
 		var event RequestEvent
+		var policyTrigger, policyAction, policyOutcome sql.NullString
+		var retryBudgetUsed, retryDelayMS, retryAfterMS sql.NullInt64
 		if err := rows.Scan(
 			&event.ID,
 			&event.RequestID,
@@ -431,9 +513,30 @@ func (ls *LogService) ListRequestEvents(
 			&event.Message,
 			&event.DurationSec,
 			&event.Outcome,
+			&policyTrigger,
+			&policyAction,
+			&policyOutcome,
+			&retryBudgetUsed,
+			&retryDelayMS,
+			&retryAfterMS,
 			&event.CreatedAt,
 		); err != nil {
 			return nil, err
+		}
+		event.PolicyTrigger = policyTrigger.String
+		event.PolicyAction = policyAction.String
+		event.PolicyOutcome = policyOutcome.String
+		if retryBudgetUsed.Valid {
+			value := int(retryBudgetUsed.Int64)
+			event.RetryBudgetUsed = &value
+		}
+		if retryDelayMS.Valid {
+			value := retryDelayMS.Int64
+			event.RetryDelayMS = &value
+		}
+		if retryAfterMS.Valid {
+			value := retryAfterMS.Int64
+			event.RetryAfterMS = &value
 		}
 		events = append(events, event)
 	}

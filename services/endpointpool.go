@@ -61,9 +61,12 @@ func (p *Provider) EndpointPool() []string {
 // upstreamStatusError 带状态码的上游失败：地址兜底需要按状态分类决定
 // 是否切换下一地址。Error() 文本与旧实现保持一致，调用方打印无感知。
 type upstreamStatusError struct {
-	status     int
-	detail     string
-	retryAfter time.Duration // 仅 429 场景可能非零
+	status           int
+	detail           string
+	retryAfter       time.Duration // 地址冷却使用的值
+	retryAfterHeader string
+	responseHeaders  http.Header
+	responseBody     []byte
 }
 
 func (e *upstreamStatusError) Error() string { return e.detail }

@@ -351,10 +351,32 @@ func ensureRequestEventTable() error {
 		message TEXT NOT NULL DEFAULT '',
 		duration_sec REAL NOT NULL DEFAULT 0,
 		outcome TEXT NOT NULL DEFAULT '',
+		policy_trigger TEXT,
+		policy_action TEXT,
+		policy_outcome TEXT,
+		retry_budget_used INTEGER,
+		retry_delay_ms INTEGER,
+		retry_after_ms INTEGER,
 		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 	)`
 	if _, err := db.Exec(schema); err != nil {
 		return err
+	}
+	policyMigrations := []struct {
+		column     string
+		definition string
+	}{
+		{"policy_trigger", "TEXT"},
+		{"policy_action", "TEXT"},
+		{"policy_outcome", "TEXT"},
+		{"retry_budget_used", "INTEGER"},
+		{"retry_delay_ms", "INTEGER"},
+		{"retry_after_ms", "INTEGER"},
+	}
+	for _, migration := range policyMigrations {
+		if err := ensureRequestEventColumn(db, migration.column, migration.definition); err != nil {
+			return fmt.Errorf("补齐 request_event_log 列 %s 失败: %w", migration.column, err)
+		}
 	}
 	if _, err = db.Exec(`
 		CREATE INDEX IF NOT EXISTS idx_request_event_created_at
@@ -421,6 +443,19 @@ func ensureRequestEventTable() error {
 		}
 	}
 	return nil
+}
+
+func ensureRequestEventColumn(db *sql.DB, column, definition string) error {
+	query := fmt.Sprintf("SELECT COUNT(*) FROM pragma_table_info('request_event_log') WHERE name = '%s'", column)
+	var count int
+	if err := db.QueryRow(query).Scan(&count); err != nil {
+		return err
+	}
+	if count != 0 {
+		return nil
+	}
+	_, err := db.Exec(fmt.Sprintf("ALTER TABLE request_event_log ADD COLUMN %s %s", column, definition))
+	return err
 }
 
 // ensureBlacklistColumn 检测 provider_blacklist 是否缺列,缺则 ALTER 补齐(旧库升级用)

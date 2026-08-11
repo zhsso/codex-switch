@@ -2,9 +2,7 @@ package services
 
 import (
 	"database/sql"
-	"encoding/json"
 	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -295,8 +293,8 @@ func TestRecordFailure_ThresholdOneBlacklistsOnFirstFailure(t *testing.T) {
 	}
 }
 
-// TestValidateBlacklistLevelConfig_RetryWaitSeconds 校验必须覆盖 RetryWaitSeconds，
-// 并强制其大于去重窗口（否则同 Provider 重试不会计入失败次数）。
+// TestValidateBlacklistLevelConfig_RetryWaitSeconds 校验必须覆盖 RetryWaitSeconds。
+// 请求内失败去重由错误策略状态负责，因此重试间隔不再与跨请求去重窗口绑定。
 func TestValidateBlacklistLevelConfig_RetryWaitSeconds(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -308,8 +306,8 @@ func TestValidateBlacklistLevelConfig_RetryWaitSeconds(t *testing.T) {
 		{"零值拒绝", 0, 2, true},
 		{"负值拒绝", -1, 2, true},
 		{"超上限拒绝", 301, 2, true},
-		{"等于去重窗口拒绝", 30, 30, true},
-		{"小于去重窗口拒绝", 3, 30, true},
+		{"等于去重窗口通过", 30, 30, false},
+		{"小于去重窗口通过", 3, 30, false},
 		{"大于去重窗口通过", 31, 30, false},
 	}
 
@@ -394,11 +392,8 @@ func TestNotifyProviderSwitch_CoalescesLatestTrailingEvent(t *testing.T) {
 }
 
 func TestSaveBlacklistLevelConfigConcurrentWritesRemainValid(t *testing.T) {
-	tmpHome := t.TempDir()
-	t.Setenv("HOME", tmpHome)
-	t.Setenv("USERPROFILE", tmpHome)
-
-	service := &SettingsService{}
+	setupBlacklistFixEnv(t)
+	service := NewSettingsService()
 	start := make(chan struct{})
 	errors := make(chan error, 16)
 	var wg sync.WaitGroup
@@ -408,7 +403,7 @@ func TestSaveBlacklistLevelConfigConcurrentWritesRemainValid(t *testing.T) {
 			defer wg.Done()
 			<-start
 			config := DefaultBlacklistLevelConfig()
-			config.FailureThreshold = value%10 + 1
+			config.NormalDegradeIntervalHours = 1 + float64(value%10)/10
 			errors <- service.SaveBlacklistLevelConfig(config)
 		}(index)
 	}
@@ -421,12 +416,18 @@ func TestSaveBlacklistLevelConfigConcurrentWritesRemainValid(t *testing.T) {
 		}
 	}
 
-	data, err := os.ReadFile(filepath.Join(tmpHome, ".code-switch", "blacklist-config.json"))
+	config, err := service.GetErrorHandlingConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	var config BlacklistLevelConfig
-	if err := json.Unmarshal(data, &config); err != nil {
-		t.Fatalf("saved config is invalid JSON: %v", err)
+	if err := validateErrorHandlingConfig(config); err != nil {
+		t.Fatalf("并发保存后统一配置无效: %v", err)
+	}
+	legacyPath, err := GetBlacklistLevelConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("旧 JSON 不应再被写入: %v", err)
 	}
 }

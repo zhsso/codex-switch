@@ -760,7 +760,9 @@ func (hcs *HealthCheckService) probeAddress(ctx context.Context, provider *Provi
 		return result, true
 	}
 
-	// 判定状态
+	// 复用转发路径的 Capacity/429 分类，但健康检查只做状态判定，
+	// 不执行用户请求动作，也不消耗共享重试预算。
+	policyTrigger := classifyUpstreamPolicyTrigger(resp.StatusCode, body)
 	result.Status, result.ErrorMessage = hcs.determineStatus(resp.StatusCode, latencyMs, body)
 
 	// 与转发路径同一套可切换分类：408/421/429/5xx 值得换下一地址，
@@ -768,7 +770,8 @@ func (hcs *HealthCheckService) probeAddress(ctx context.Context, provider *Provi
 	switchable := resp.StatusCode == http.StatusRequestTimeout ||
 		resp.StatusCode == http.StatusMisdirectedRequest ||
 		resp.StatusCode == http.StatusTooManyRequests ||
-		resp.StatusCode >= 500
+		resp.StatusCode >= 500 ||
+		policyTrigger == PolicyTriggerCapacity
 	return result, switchable
 }
 
@@ -780,6 +783,10 @@ func (hcs *HealthCheckService) determineStatus(statusCode, latencyMs int, body [
 		if threshold := hcs.settingsService.GetIntSetting("availability_operational_threshold_ms"); threshold > 0 {
 			operationalThresholdMs = threshold
 		}
+	}
+
+	if classifyUpstreamPolicyTrigger(statusCode, body) == PolicyTriggerCapacity {
+		return HealthStatusFailed, "模型容量不足"
 	}
 
 	// 2xx = 成功

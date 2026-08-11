@@ -91,6 +91,12 @@ export type RequestEvent = {
   message: string
   duration_sec: number
   outcome: string
+  policy_trigger?: string
+  policy_action?: string
+  policy_outcome?: string
+  retry_budget_used?: number
+  retry_delay_ms?: number
+  retry_after_ms?: number
   created_at: string
 }
 

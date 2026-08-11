@@ -9,6 +9,7 @@
     "speedtest": "测速",
     "logs": "日志",
     "events": "事件日志",
+    "errorHandling": "错误处理",
     "capture": "抓包",
     "settings": "设置",
     "toggleTheme": "切换明暗主题",
@@ -507,10 +508,103 @@
         "attempt": "第 {count} 次尝试",
         "retry": "重试 {count}"
       },
+      "policy": {
+        "budget": "预算已用 {count}",
+        "delay": "退避 {value}",
+        "action": {
+          "passThrough": "原样透传",
+          "return502": "返回 502",
+          "switchProvider": "切换 Provider",
+          "retryThenSwitch": "重试后切换"
+        },
+        "outcome": {
+          "retried": "已重试",
+          "retryCancelled": "等待期取消",
+          "switchRequested": "请求切换",
+          "switchedProvider": "已切换 Provider",
+          "passedThrough": "已原样透传",
+          "returned502": "已返回 502"
+        }
+      },
       "pagination": {
         "page": "第 {page} 页",
         "previous": "上一页",
         "next": "下一页"
+      }
+    },
+    "errorHandling": {
+      "title": "错误处理",
+      "subtitle": "上游 Capacity、限流与自动拉黑策略",
+      "loadFailed": "加载错误处理配置失败：",
+      "saveFailed": "保存错误处理配置失败：",
+      "saved": "错误处理配置已保存",
+      "actions": {
+        "switch": "切换 Provider",
+        "retrySwitch": "重试后切换 Provider",
+        "pass": "原样透传",
+        "return502": "返回结构化 502"
+      },
+      "summary": {
+        "title": "今日摘要",
+        "retries": "重试动作",
+        "switches": "Provider 切换",
+        "passed": "原样透传",
+        "returned502": "返回 502",
+        "details": "查看详细事件"
+      },
+      "tabs": {
+        "label": "错误处理视图",
+        "policies": "处理策略",
+        "blacklist": "自动拉黑"
+      },
+      "policy": {
+        "title": "可配置规则",
+        "scope": "Responses API · 全局",
+        "capacity": "模型容量不足",
+        "rateLimit": "请求频率受限",
+        "endpointPool": "当前地址池",
+        "providerPolicy": "Provider 策略",
+        "action": "地址池耗尽后"
+      },
+      "retry": {
+        "title": "请求级重试预算",
+        "sharedBudget": "Capacity 与 429 共享额外重试次数",
+        "sharedBudgetHint": "首次地址和 Provider 尝试不计入该预算",
+        "addressFirst": "先耗尽当前地址池"
+      },
+      "fixed": {
+        "title": "固定规则",
+        "readOnly": "只读",
+        "trigger": "触发",
+        "route": "处理",
+        "terminal": "终态",
+        "content": "请求内容错误",
+        "noFailure": "不记 Provider 失败；尝试其他 Provider",
+        "providerFailure": "记 Provider 失败",
+        "nextProvider": "下一 Provider",
+        "endpointFirst": "地址池后切换 Provider",
+        "clientDisconnect": "客户端断开",
+        "stopNoFailure": "立即停止，不记失败",
+        "streamCommitted": "流已提交后中断",
+        "stopWithFailure": "停止并记录失败",
+        "keepStream": "保持已输出流",
+        "concurrency": "并发额度耗尽",
+        "wait": "有界等待"
+      },
+      "blacklist": {
+        "title": "自动拉黑",
+        "scope": "全局 Provider 失败状态",
+        "basic": "基础策略",
+        "fallbackMode": "等级模式关闭后的行为",
+        "fixed": "固定时长拉黑",
+        "none": "不拉黑，直接降级",
+        "retryAndDedupe": "去重与同 Provider 重试",
+        "dedupe": "失败去重窗口",
+        "retryWait": "同 Provider 重试等待",
+        "levelDurations": "L1–L5 拉黑时长",
+        "degradeInterval": "正常降级间隔",
+        "forgiveness": "宽恕触发时间",
+        "jumpWindow": "跳级惩罚窗口"
       }
     },
     "general": {

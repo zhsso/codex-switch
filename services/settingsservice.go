@@ -25,7 +25,7 @@ type BlacklistLevelConfig struct {
 	// 基础配置
 	FailureThreshold    int `json:"failureThreshold"`    // 失败阈值（连续失败次数）
 	DedupeWindowSeconds int `json:"dedupeWindowSeconds"` // 去重窗口（秒）
-	RetryWaitSeconds    int `json:"retryWaitSeconds"`    // 同 Provider 重试等待时间（秒），必须 > DedupeWindowSeconds
+	RetryWaitSeconds    int `json:"retryWaitSeconds"`    // 同 Provider 重试等待时间（秒）
 
 	// 降级配置
 	NormalDegradeIntervalHours float64 `json:"normalDegradeIntervalHours"` // 正常降级间隔（小时）
@@ -50,7 +50,7 @@ func DefaultBlacklistLevelConfig() *BlacklistLevelConfig {
 		EnableLevelBlacklist:       false, // 默认关闭，向后兼容
 		FailureThreshold:           3,
 		DedupeWindowSeconds:        2,
-		RetryWaitSeconds:           3, // 必须 > DedupeWindowSeconds，否则重试不会计入失败次数
+		RetryWaitSeconds:           3,
 		NormalDegradeIntervalHours: 1.0,
 		ForgivenessHours:           3.0,
 		JumpPenaltyWindowHours:     2.5,
@@ -75,80 +75,30 @@ func NewSettingsService() *SettingsService {
 
 // GetBlacklistSettings 获取黑名单配置
 func (ss *SettingsService) GetBlacklistSettings() (threshold int, duration int, err error) {
-	db, err := xdb.DB("default")
+	config, err := ss.GetErrorHandlingConfig()
 	if err != nil {
-		return 0, 0, fmt.Errorf("获取数据库连接失败: %w", err)
+		return 0, 0, err
 	}
-
-	// 获取失败阈值
-	var thresholdStr string
-	err = db.QueryRow(`
-		SELECT value FROM app_settings WHERE key = 'blacklist_failure_threshold'
-	`).Scan(&thresholdStr)
-
-	if err != nil {
-		return 0, 0, fmt.Errorf("获取失败阈值失败: %w", err)
-	}
-
-	threshold, err = strconv.Atoi(thresholdStr)
-	if err != nil {
-		return 0, 0, fmt.Errorf("失败阈值格式错误: %w", err)
-	}
-
-	// 获取拉黑时长
-	var durationStr string
-	err = db.QueryRow(`
-		SELECT value FROM app_settings WHERE key = 'blacklist_duration_minutes'
-	`).Scan(&durationStr)
-
-	if err != nil {
-		return 0, 0, fmt.Errorf("获取拉黑时长失败: %w", err)
-	}
-
-	duration, err = strconv.Atoi(durationStr)
-	if err != nil {
-		return 0, 0, fmt.Errorf("拉黑时长格式错误: %w", err)
-	}
-
-	return threshold, duration, nil
+	return config.Blacklist.FailureThreshold, config.Blacklist.FallbackDurationMinutes, nil
 }
 
 // IsBlacklistEnabled 检查拉黑功能是否启用
 func (ss *SettingsService) IsBlacklistEnabled() bool {
-	db, err := xdb.DB("default")
+	config, err := ss.GetErrorHandlingConfig()
 	if err != nil {
-		log.Printf("⚠️  获取数据库连接失败: %v，默认关闭拉黑", err)
+		log.Printf("获取统一错误处理配置失败: %v，默认关闭拉黑", err)
 		return false
 	}
-
-	var enabledStr string
-	err = db.QueryRow(`
-		SELECT value FROM app_settings WHERE key = 'enable_blacklist'
-	`).Scan(&enabledStr)
-
-	if err != nil {
-		log.Printf("⚠️  获取拉黑开关失败: %v，默认关闭", err)
-		return false
-	}
-
-	return enabledStr == "true"
+	return config.Blacklist.Enabled
 }
 
 // UpdateBlacklistEnabled 更新拉黑功能开关
 func (ss *SettingsService) UpdateBlacklistEnabled(enabled bool) error {
-	enabledStr := "false"
-	if enabled {
-		enabledStr = "true"
-	}
-
-	err := GlobalDBQueue.Exec(`
-		UPDATE app_settings SET value = ? WHERE key = 'enable_blacklist'
-	`, enabledStr)
-
-	if err != nil {
+	if err := ss.mutateErrorHandlingConfig(func(config *ErrorHandlingConfig) {
+		config.Blacklist.Enabled = enabled
+	}); err != nil {
 		return fmt.Errorf("更新拉黑开关失败: %w", err)
 	}
-
 	log.Printf("✅ 拉黑功能开关已更新: %v", enabled)
 	return nil
 }
@@ -160,16 +110,10 @@ func (ss *SettingsService) UpdateBlacklistSettings(threshold int, duration int) 
 		return err
 	}
 
-	// 单条语句原子更新两个键:SQLite 单语句自带原子性,
-	// 替代原先"两次写入+失败补偿"在二次失败时会留下阈值/时长不一致的手写 Saga
-	err := GlobalDBQueue.Exec(`
-		UPDATE app_settings SET value = CASE key
-			WHEN 'blacklist_failure_threshold' THEN ?
-			WHEN 'blacklist_duration_minutes' THEN ?
-		END
-		WHERE key IN ('blacklist_failure_threshold', 'blacklist_duration_minutes')
-	`, strconv.Itoa(threshold), strconv.Itoa(duration))
-	if err != nil {
+	if err := ss.mutateErrorHandlingConfig(func(config *ErrorHandlingConfig) {
+		config.Blacklist.FailureThreshold = threshold
+		config.Blacklist.FallbackDurationMinutes = duration
+	}); err != nil {
 		return fmt.Errorf("更新拉黑配置失败: %w", err)
 	}
 
@@ -201,41 +145,20 @@ func (ss *SettingsService) GetBlacklistSettingsStruct() (*BlacklistSettings, err
 
 // GetLevelBlacklistEnabled 获取等级拉黑开关状态
 func (ss *SettingsService) GetLevelBlacklistEnabled() (bool, error) {
-	db, err := xdb.DB("default")
+	config, err := ss.GetErrorHandlingConfig()
 	if err != nil {
-		return false, fmt.Errorf("获取数据库连接失败: %w", err)
+		return false, err
 	}
-
-	var enabledStr string
-	err = db.QueryRow(`
-		SELECT value FROM app_settings WHERE key = 'blacklist_level_enabled'
-	`).Scan(&enabledStr)
-
-	if err != nil {
-		// 如果找不到记录，返回默认值 false（向后兼容）
-		return false, nil
-	}
-
-	return enabledStr == "true", nil
+	return config.Blacklist.EnableLevelBlacklist, nil
 }
 
 // SetLevelBlacklistEnabled 设置等级拉黑开关状态
 func (ss *SettingsService) SetLevelBlacklistEnabled(enabled bool) error {
-	enabledStr := "false"
-	if enabled {
-		enabledStr = "true"
-	}
-
-	// 使用 UPSERT 模式：如果存在则更新，不存在则插入
-	err := GlobalDBQueue.Exec(`
-		INSERT INTO app_settings (key, value) VALUES ('blacklist_level_enabled', ?)
-		ON CONFLICT(key) DO UPDATE SET value = excluded.value
-	`, enabledStr)
-
-	if err != nil {
+	if err := ss.mutateErrorHandlingConfig(func(config *ErrorHandlingConfig) {
+		config.Blacklist.EnableLevelBlacklist = enabled
+	}); err != nil {
 		return fmt.Errorf("设置等级拉黑开关失败: %w", err)
 	}
-
 	return nil
 }
 
